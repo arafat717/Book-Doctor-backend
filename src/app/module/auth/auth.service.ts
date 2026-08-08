@@ -202,7 +202,7 @@ const googleLogin = async (payload: IGoogleLoginPayload) => {
   let googleIdTokenPayload: TokenPayload | null | undefined;
   try {
     const ticket = await googleClient.verifyIdToken({
-      idToken: payload.idToken, 
+      idToken: payload.idToken,
       audience: config.google_client_id,
     });
     googleIdTokenPayload = ticket.getPayload();
@@ -232,27 +232,71 @@ const googleLogin = async (payload: IGoogleLoginPayload) => {
 
   let user = ifPatientExistsWithGoogleAuth;
 
-  if (!user) {
-    user = await prisma.user.create({
-      data: {
-        name: googleIdTokenPayload.name,
+  if (!ifPatientExistsWithGoogleAuth) {
+    const ifUserExistsWithCredentials = await prisma.user.findUnique({
+      where: {
         email: googleIdTokenPayload.email,
         role: Role.PATIENT,
-        status: UserStatus.ACTIVE,
-        emailVerified: true,
-        googleId: googleIdTokenPayload.sub,
-        authProvider: AuthProvider.GOOGLE,
-        patient: {
-          create: {
-            name: googleIdTokenPayload.name,
-            email: googleIdTokenPayload.email,
-          },
-        },
-      },
-      include: {
-        patient: true,
+        authProvider: AuthProvider.CREDENTIALS,
       },
     });
+
+    if (ifUserExistsWithCredentials) {
+      if (!ifUserExistsWithCredentials.emailVerified) {
+        throw new Error("User email is not verified");
+      }
+      if (ifUserExistsWithCredentials.status === UserStatus.BLOCKED) {
+        throw new Error("User is blocked");
+      }
+      if (
+        ifUserExistsWithCredentials?.isDeleted ||
+        ifUserExistsWithCredentials?.status === UserStatus.DELETED
+      ) {
+        throw new Error("User is deleted");
+      }
+
+      user = await prisma.user.update({
+        where: { id: ifUserExistsWithCredentials.id },
+        data: {
+          googleId: googleIdTokenPayload.sub,
+        },
+      });
+    } else {
+      user = await prisma.user.create({
+        data: {
+          name: googleIdTokenPayload.name,
+          email: googleIdTokenPayload.email,
+          role: Role.PATIENT,
+          status: UserStatus.ACTIVE,
+          emailVerified: true,
+          googleId: googleIdTokenPayload.sub,
+          authProvider: AuthProvider.GOOGLE,
+          patient: {
+            create: {
+              name: googleIdTokenPayload.name,
+              email: googleIdTokenPayload.email,
+            },
+          },
+        },
+        include: {
+          patient: true,
+        },
+      });
+    }
+  }
+
+  if (!user) {
+    throw new Error("User not found");
+  }
+
+  if (!user.emailVerified) {
+    throw new Error("User email is not verified");
+  }
+  if (user.status === UserStatus.BLOCKED) {
+    throw new Error("User is blocked");
+  }
+  if (user?.isDeleted || user?.status === UserStatus.DELETED) {
+    throw new Error("User is deleted");
   }
 
   const jwtPayload = {
